@@ -1,102 +1,113 @@
-# this file deals with one dimensional electronic systems
-# the functions are sampled on a grid {x₀,x₀+h,x₀+2h,...,x₀+Gh} (a G+1-dimesional vector)
-# and the function f is represented by a vector {f(x₀),f(x₀+h),...,f(x₀+(G-1)h)}
-# Also, we assume periodic boundary condition, f(x₀+Gh) = f(x₀)
+struct SpaceSample1D{T}
+    left_boundary::T
+    right_boundary::T
+    num_samples::Int
+end
 
-abstract type Hamiltonian{T} end
+function step(X::SpaceSample1D)
+    return (X.right_boundary - X.left_boundary) / (X.num_samples-1)
+end
 
-function one_dim_kinetic_energy_periodic(G::Int, h::T; open::Bool=false) where T<:Real
-    # f''(x₀+kh) = [f(x₀+(k-1)h) + f(x₀+(k+1)h) - 2f(x₀+kh)] / h² + O(h²), 1≤k≤G-1
-    operator = Matrix(Tridiagonal(-0.5 .* ones(G-1)./(h^2), ones(G)./(h^2), -0.5 .* ones(G-1)./(h^2)))
-    if !open
-        operator[1,G] = -0.5/(h^2)
-        operator[G,1] = -0.5/(h^2)
+function coordinate_sample(X::SpaceSample1D)
+    return collect(range(X.left_boundary, X.right_boundary, X.num_samples))
+end
+
+function kinetic_energy_1d(X::SpaceSample1D{T}; periodic::Bool = true) where T<:Real
+    x_step = step(X)
+    operator = Tridiagonal(ones(T, X.num_samples - 1) .* (-0.5/x_step^2),
+        ones(T, X.num_samples) .* (1/x_step^2),
+        ones(T, X.num_samples - 1) .* (-0.5/x_step^2))
+    if periodic
+        operator = Matrix(operator)
+        operator[1, X.num_samples] = -0.5/x_step^2
+        operator[X.num_samples, 1] = -0.5/x_step^2
     end
     return operator
 end
 
-function one_dim_external_potential(V, x::AbstractVector{T}) where T<:Real
-    # V is the external potential that this electronic system lives in
-    return Diagonal([V(ξ) for ξ in x])
+function external_potential_1d(X::SpaceSample1D{T}, V_ext) where T<:Real
+    return Diagonal([V_ext(x) for x in coordinate_sample(X)])
 end
 
-function one_dim_coulomb(n::Vector{T}, x::AbstractVector{T}, h::T) where T<:Real
-    G = length(x)
-    integrand = [[n[k]*h/sqrt((x[l]-x[k])^2+eps(T)) for k in 1:G] for l in 1:G]
-    # @show sum(integrand,dims=1)
-    return Diagonal(sum(integrand,dims=1)[1])
+function coulomb_potential_1d(X::SpaceSample1D{T}, density::AbstractVector{T}) where T<:Real
+
+    @assert length(density) == X.num_samples
+
+    x = coordinate_sample(X)
+    x_step = step(X)
+    integrand = [[density[k]*x_step/sqrt((x[l]-x[k])^2+0.1) for l in 1:X.num_samples] for k in 1:X.num_samples]
+    return Diagonal(sum(integrand))
 end
 
-function one_dim_lda(n::AbstractVector{T}) where T<:Real
-    # v(x) = -(3n(x)/π)^(1/3)
-    return Diagonal(-(3 .* n ./ π).^(1/3))
+function lda_potential_1d(density::AbstractVector{T}) where T<:Real
+    return Diagonal((3/π)^(1/3) .* density .^(1/3))
 end
 
-function kohn_sham_solver(h::Hamiltonian{T}, density, num_electron::Int) where T<:Complex
-    m = mat(h, density)
-    @assert num_electron <= 2 * size(m, 1)
-    @assert ishermitian(m)
+abstract type Hamiltonian1D{T} end
 
-    ψ = eigvecs(m)
-    nl = zero(density)
-    for k in 1:num_electron ÷ 2
-        nl .+= 2 .* abs2.(view(ψ, :, k)) ./ step(h)
+struct NonInteractingHamiltonian1D{RT, FT} <: Hamiltonian1D{RT}
+    space::SpaceSample1D{RT}
+    external_potential::FT
+end
+
+struct InteractingHamiltonian1D{RT, FT} <: Hamiltonian1D{RT}
+    space::SpaceSample1D{RT}
+    external_potential::FT
+end
+
+function mat(system::NonInteractingHamiltonian1D{RT, FT},
+        density::AbstractVector{RT}; periodic::Bool=true
+        ) where {RT<:Real, FT}
+    return kinetic_energy_1d(system.space,periodic=periodic) +
+        external_potential_1d(system.space, system.external_potential)
+end
+
+function mat(system::InteractingHamiltonian1D{RT, FT},
+        density::AbstractVector{RT}; periodic::Bool=true
+        ) where{RT<:Real, FT}
+    @assert length(density) == system.space.num_samples
+
+    return kinetic_energy_1d(system.space,periodic=periodic) +
+        external_potential_1d(system.space, system.external_potential) +
+        coulomb_potential_1d(system.space, density) +
+        lda_potential_1d(density)
+end
+
+function kohn_sham_solver(H::Hamiltonian1D{T},
+        num_electron::Int,
+        density::AbstractVector{T};
+        periodic::Bool=true
+        ) where T<:Real
+    h = mat(H, density, periodic=periodic)
+    @assert length(density) == H.space.num_samples
+    @assert ishermitian(h)
+
+    x_step = step(H.space)
+    E,ψ = eigen(h)
+    density_calculated = zero(density)
+    for l in 1:num_electron ÷ 2
+        density_calculated += 2 .* abs2.(ψ[:,l]) ./ x_step
     end
     if num_electron % 2 == 1
-        nl .+= abs2.(view(ψ, :, num_electron ÷ 2 + 1)) ./ step(h)
+        density_calculated += abs2.(ψ[:,num_electron ÷ 2 + 1]) ./ x_step
     end
-    return nl
+    return density_calculated, E, ψ
 end
 
-struct NonInteractingHamiltonian{FT, RT} <: Hamiltonian{Complex{RT}}
-    potential::FT
-    x0::RT
-    num_coordinates::Int
-    step::RT
-end
-struct InteractingHamiltonian{FT, RT} <: Hamiltonian{Complex{RT}}
-    potential::FT
-    x0::RT
-    num_coordinates::Int
-    step::RT
-end
-function coordinates(h::Hamiltonian)
-    return LinRange(x0(h), x0(h) + num_coordinates(h) * step(h), num_coordinates(h))
-end
-for HT in [:InteractingHamiltonian, :NonInteractingHamiltonian]
-    @eval num_coordinates(x::$HT) = x.num_coordinates
-    @eval step(x::$HT) = x.step
-    @eval x0(x::$HT) = x.x0
-    @eval potential(x::$HT) = x.potential
-end
-
-function mat(h::NonInteractingHamiltonian{F, T}, density) where {F, T}
-    return one_dim_kinetic_energy_periodic(num_coordinates(h), step(h)) +
-        one_dim_external_potential(potential(h), coordinates(h))
-end
-function mat(h::InteractingHamiltonian{F, T}, density) where {F, T}
-    x = coordinates(h)
-    @show density
-    return one_dim_kinetic_energy_periodic(h.num_coordinates, h.step) +
-        one_dim_external_potential(h.potential, x)
-        one_dim_coulomb(density, x, h.step) +
-        one_dim_lda(density)
-end
-
-
-function self_consistent_loop(
-        hamiltonian::Hamiltonian{T}, 
-        num_electron::Int,
+function self_consistent_loop(H::Hamiltonian1D{T},
+        num_electron::Int;
+        # density_guess = ones(T, H.space.num_samples) .* (num_electron / (H.space.right_boundary - H.space.left_boundary)),
+        density_guess = zero(coordinate_sample(H.space)),
         tol = 1e-3, max_iter::Int = 10^4,
-        n_ini = ones(real(T), num_coordinates(hamiltonian))
-    ) where T<:Complex
-    n_old = n_ini
-    local n_new
+        periodic::Bool=true
+        ) where T<:Real
+    density_old = density_guess
+    local density_new
     for _ in 1:max_iter
-        n_new = kohn_sham_solver(hamiltonian, n_old, num_electron)
-        sum(abs2, n_new - n_old) < tol && break
-        n_old = n_new
+        density_new,E,_ = kohn_sham_solver(H, num_electron, density_old, periodic=periodic)
+        @show E[1]
+        (sum(abs2, density_new - density_old) < tol) && break
+        density_old = density_new
     end
-
-    return n_new
+    return density_new
 end
