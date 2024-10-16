@@ -12,5 +12,9 @@ where the effective potential $V_("eff")$ is made of three parts:
 + the Coulomb repulsion between electrons,
 + the complicated functional describing the exchange energy and correlation energy.
 
+When simulating the electronic structures in materials,
+$V_("ext")$ is taken as the Coulomb interaction between the nucleus and the electrons.
+
 The Coulomb repulsion is of the form
 $ v_"C" (x) = integral frac(n(x')d x',sqrt((x-x')^2+epsilon)). $
+Here $epsilon$ is a small number to prevent the divergence of the integral.

@@ -44,34 +44,7 @@ function lda_potential_1d(density::AbstractVector{T}) where T<:Real
 end
 
 abstract type Hamiltonian1D{T} end
-
-struct NonInteractingHamiltonian1D{RT, FT} <: Hamiltonian1D{RT}
-    space::SpaceSample1D{RT}
-    external_potential::FT
-end
-
-struct InteractingHamiltonian1D{RT, FT} <: Hamiltonian1D{RT}
-    space::SpaceSample1D{RT}
-    external_potential::FT
-end
-
-function mat(system::NonInteractingHamiltonian1D{RT, FT},
-        density::AbstractVector{RT}; periodic::Bool=true
-        ) where {RT<:Real, FT}
-    return kinetic_energy_1d(system.space,periodic=periodic) +
-        external_potential_1d(system.space, system.external_potential)
-end
-
-function mat(system::InteractingHamiltonian1D{RT, FT},
-        density::AbstractVector{RT}; periodic::Bool=true
-        ) where{RT<:Real, FT}
-    @assert length(density) == system.space.num_samples
-
-    return kinetic_energy_1d(system.space,periodic=periodic) +
-        external_potential_1d(system.space, system.external_potential) +
-        coulomb_potential_1d(system.space, density) +
-        lda_potential_1d(density)
-end
+# for examples of this type, see file OneDimModels
 
 function kohn_sham_solver(H::Hamiltonian1D{T},
         num_electron::Int,
